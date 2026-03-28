@@ -6,9 +6,12 @@ import 'package:bean_budget/core/repositories/receipt_repository.dart';
 import 'package:bean_budget/features/categories/categories_notifier.dart';
 import 'package:bean_budget/features/receipts/receipts_notifier.dart';
 import 'package:bean_budget/app.dart';
+import 'package:flusseract/flusseract.dart' as flusseract;
 
-void main() {
+void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  await flusseract.TessData.init();
 
   // Initialize database and repositories
   final db = AppDatabase.instance();

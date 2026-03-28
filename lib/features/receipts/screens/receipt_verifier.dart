@@ -1,21 +1,59 @@
 import 'dart:async';
+import 'dart:io';
+import 'dart:math' as math;
+import 'dart:typed_data';
+import 'dart:ui' as ui;
+import 'package:flutter/foundation.dart' show compute;
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:drift/drift.dart' hide Column;
-import 'package:bean_budget/core/database/database.dart';
-import 'package:bean_budget/core/database/tables.dart';
+import 'package:bean_budget/core/database/database.dart' hide Image;
+import 'package:bean_budget/core/database/tables.dart' hide Image;
 import 'package:bean_budget/core/theme/app_theme.dart';
+import 'package:bean_budget/core/utils/perspective_math.dart';
 import 'package:bean_budget/features/receipts/receipts_notifier.dart';
 import 'package:bean_budget/features/categories/widgets/category_pickers.dart';
+import 'package:flusseract/flusseract.dart' as flusseract;
+
+class OcrBox {
+  final String word;
+  final double confidence;
+  final int x1, y1, x2, y2;
+  final int blockNum, parNum, lineNum, wordNum;
+
+  const OcrBox({
+    required this.word,
+    required this.confidence,
+    required this.x1, required this.y1,
+    required this.x2, required this.y2,
+    required this.blockNum, required this.parNum,
+    required this.lineNum, required this.wordNum,
+  });
+}
+
+Future<List<OcrBox>> _runOcrInBackground((Uint8List, String) args) async {
+  final pixImage = flusseract.PixImage.fromBytes(args.$1);
+  final tess = flusseract.Tesseract(tessDataPath: args.$2);
+  await tess.utf8Text(pixImage);
+  final raw = tess.getBoundingBoxes(flusseract.PageIteratorLevel.word);
+  return raw.map((b) => OcrBox(
+    word: b.word, confidence: b.confidence,
+    x1: b.x1, y1: b.y1, x2: b.x2, y2: b.y2,
+    blockNum: b.blockNum, parNum: b.parNum,
+    lineNum: b.lineNum, wordNum: b.wordNum,
+  )).toList();
+}
 
 class ReceiptDetailsPanel extends StatefulWidget {
   final ReceiptData item;
   final ReceiptsNotifier notifier;
+  final void Function(String receiptId, List<OcrBox>?, Size?) onOcrComplete;
 
   const ReceiptDetailsPanel({
     super.key,
     required this.item,
     required this.notifier,
+    required this.onOcrComplete,
   });
 
   @override
@@ -36,6 +74,13 @@ class _ReceiptDetailsPanelState extends State<ReceiptDetailsPanel> {
   List<Category> _allCategories = [];
   bool _confirmingDelete = false;
   Timer? _debounce;
+  
+  bool _isOcrRunning = false;
+
+  // Cache keyed by "receiptId/imageId/cropHash" — persists for the app session.
+  static final Map<String, (List<OcrBox>?, Size?)> _ocrCache = {};
+  String get _cacheKey =>
+      '${widget.item.receipt.id}/${widget.item.image.id}/${widget.item.receipt.cropPoints?.hashCode}';
 
   @override
   void initState() {
@@ -51,6 +96,91 @@ class _ReceiptDetailsPanelState extends State<ReceiptDetailsPanel> {
       _initValues();
       _confirmingDelete = false;
     }
+    if (oldWidget.item.image.id != widget.item.image.id ||
+        oldWidget.item.receipt.cropPoints != widget.item.receipt.cropPoints) {
+      _extractOcrText();
+    }
+  }
+
+  Future<void> _extractOcrText() async {
+    if (_isOcrRunning) return;
+
+    // Return cached result immediately if available.
+    final key = _cacheKey;
+    if (_ocrCache.containsKey(key)) {
+      final (boxes, size) = _ocrCache[key]!;
+      widget.onOcrComplete(widget.item.receipt.id, boxes, size);
+      return;
+    }
+
+    setState(() => _isOcrRunning = true);
+
+    try {
+      final imageFile = File(widget.item.image.filePath);
+      if (!await imageFile.exists()) {
+        if (mounted) setState(() => _isOcrRunning = false);
+        widget.onOcrComplete(widget.item.receipt.id, null, null);
+        return;
+      }
+
+      final rawBytes = await imageFile.readAsBytes();
+      final codec = await ui.instantiateImageCodec(rawBytes);
+      final frame = await codec.getNextFrame();
+      final uiImage = frame.image;
+
+      Uint8List tessBytes;
+      Size tessSize;
+
+      final cropPoints = widget.item.receipt.cropPoints;
+      if (cropPoints != null) {
+        (tessBytes, tessSize) = await _buildWarpedBytes(uiImage, cropPoints);
+      } else {
+        tessBytes = rawBytes;
+        tessSize = Size(uiImage.width.toDouble(), uiImage.height.toDouble());
+      }
+      uiImage.dispose();
+
+      // Run Tesseract in a background isolate so it doesn't block the UI.
+      final tessDataPath = flusseract.TessData.tessDataPath as String;
+      final boxes = await compute(_runOcrInBackground, (tessBytes, tessDataPath));
+
+      _ocrCache[key] = (boxes, tessSize);
+      if (mounted) setState(() => _isOcrRunning = false);
+      widget.onOcrComplete(widget.item.receipt.id, boxes, tessSize);
+    } catch (e) {
+      if (mounted) setState(() => _isOcrRunning = false);
+      widget.onOcrComplete(widget.item.receipt.id, null, null);
+    }
+  }
+
+  Future<(Uint8List, Size)> _buildWarpedBytes(ui.Image uiImage, CropPoints points) async {
+    final w = uiImage.width.toDouble();
+    final h = uiImage.height.toDouble();
+
+    final srcTl = Offset(points.topLeft.x * w, points.topLeft.y * h);
+    final srcTr = Offset(points.topRight.x * w, points.topRight.y * h);
+    final srcBr = Offset(points.bottomRight.x * w, points.bottomRight.y * h);
+    final srcBl = Offset(points.bottomLeft.x * w, points.bottomLeft.y * h);
+
+    final destWidth = math.max((srcTr - srcTl).distance, (srcBr - srcBl).distance);
+    final destHeight = math.max((srcBl - srcTl).distance, (srcBr - srcTr).distance);
+
+    final matrix = PerspectiveMath.getPerspectiveTransform(
+      srcTl: srcTl, srcTr: srcTr, srcBr: srcBr, srcBl: srcBl,
+      destWidth: destWidth, destHeight: destHeight,
+    );
+
+    final recorder = ui.PictureRecorder();
+    final canvas = ui.Canvas(recorder);
+    canvas.transform(matrix.storage);
+    canvas.drawImage(uiImage, Offset.zero, Paint());
+
+    final picture = recorder.endRecording();
+    final output = await picture.toImage(destWidth.round(), destHeight.round());
+    final byteData = await output.toByteData(format: ui.ImageByteFormat.png);
+    output.dispose();
+
+    return (byteData!.buffer.asUint8List(), Size(destWidth, destHeight));
   }
 
   Future<void> _loadCategories() async {
@@ -91,6 +221,9 @@ class _ReceiptDetailsPanelState extends State<ReceiptDetailsPanel> {
     _selectedStoreId = widget.item.receipt.storeId;
     _selectedStoreName = widget.item.store?.name;
     _selectedCategoryId = widget.item.receipt.categoryId;
+    
+    _isOcrRunning = false;
+    _extractOcrText();
   }
 
   @override
@@ -105,7 +238,8 @@ class _ReceiptDetailsPanelState extends State<ReceiptDetailsPanel> {
 
   int? _parsePennies(String value) {
     if (value.isEmpty) return null;
-    final parsed = double.tryParse(value);
+    final cleaned = value.trim().replaceFirst(RegExp(r'^\$'), '');
+    final parsed = double.tryParse(cleaned);
     if (parsed == null) return null;
     return (parsed * 100).round();
   }
@@ -399,6 +533,7 @@ class _ReceiptDetailsPanelState extends State<ReceiptDetailsPanel> {
       categoryId: _selectedCategoryId,
     );
   }
+
 }
 
 class _InstantCategoryDropdown extends StatefulWidget {

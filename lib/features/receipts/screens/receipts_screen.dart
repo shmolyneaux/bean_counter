@@ -1,6 +1,7 @@
 import 'dart:io';
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:desktop_drop/desktop_drop.dart';
 import 'package:file_selector/file_selector.dart';
 import 'package:bean_budget/core/database/tables.dart';
@@ -23,6 +24,8 @@ class _ReceiptsScreenState extends State<ReceiptsScreen> {
   bool _isDragging = false;
   String? _selectedReceiptId;
   bool _isAdjustingCrop = false;
+  List<OcrBox>? _ocrBoxes;
+  Size? _ocrSize;
 
   @override
   void initState() {
@@ -48,6 +51,60 @@ class _ReceiptsScreenState extends State<ReceiptsScreen> {
       }
       setState(() {});
     }
+  }
+
+  void _onOcrComplete(String receiptId, List<OcrBox>? boxes, Size? size) {
+    if (mounted && receiptId == _selectedReceiptId) {
+      setState(() {
+        _ocrBoxes = boxes;
+        _ocrSize = size;
+      });
+    }
+  }
+
+  Future<void> _copyWord(String word) async {
+    await Clipboard.setData(ClipboardData(text: word));
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Copied: "$word"'),
+          duration: const Duration(seconds: 2),
+        ),
+      );
+    }
+  }
+
+  Widget _buildWordBox(OcrBox box) {
+    final conf = box.confidence;
+    final color = conf >= 80
+        ? Colors.green
+        : conf >= 50
+            ? Colors.orange
+            : Colors.red;
+
+    return Tooltip(
+      richMessage: TextSpan(children: [
+        TextSpan(
+          text: '"${box.word}"\n',
+          style: const TextStyle(fontWeight: FontWeight.bold),
+        ),
+        TextSpan(text: 'Confidence: ${conf.toStringAsFixed(1)}%\n'),
+        TextSpan(
+          text: 'Block ${box.blockNum}  Para ${box.parNum}  '
+              'Line ${box.lineNum}  Word ${box.wordNum}',
+          style: const TextStyle(color: Colors.white70, fontSize: 11),
+        ),
+      ]),
+      child: GestureDetector(
+        onTap: () => _copyWord(box.word),
+        child: Container(
+          decoration: BoxDecoration(
+            border: Border.all(color: color.withOpacity(0.8), width: 1),
+            color: color.withOpacity(0.08),
+          ),
+        ),
+      ),
+    );
   }
 
   Future<void> _pickFiles() async {
@@ -223,6 +280,8 @@ class _ReceiptsScreenState extends State<ReceiptsScreen> {
                       setState(() {
                         _selectedReceiptId = item.receipt.id;
                         _isAdjustingCrop = false;
+                        _ocrBoxes = null;
+                        _ocrSize = null;
                       });
                     }
                   },
@@ -247,6 +306,7 @@ class _ReceiptsScreenState extends State<ReceiptsScreen> {
           ReceiptDetailsPanel(
             item: selectedItem,
             notifier: notifier,
+            onOcrComplete: _onOcrComplete,
           ),
       ],
     );
@@ -260,17 +320,22 @@ class _ReceiptsScreenState extends State<ReceiptsScreen> {
           ReceiptCropperWidget(
             item: item,
             notifier: widget.notifier,
+            onAccepted: _isAdjustingCrop
+                ? () => setState(() => _isAdjustingCrop = false)
+                : null,
           ),
           if (_isAdjustingCrop)
             Positioned(
-              right: 16,
+              left: 16,
               top: 16,
-              child: FloatingActionButton.extended(
+              child: OutlinedButton.icon(
                 onPressed: () => setState(() => _isAdjustingCrop = false),
-                icon: const Icon(Icons.check_rounded),
-                label: const Text('Done Adjusting'),
-                backgroundColor: AppColors.primary,
-                foregroundColor: Colors.white,
+                icon: const Icon(Icons.close_rounded),
+                label: const Text('Cancel'),
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: AppColors.textPrimary,
+                  backgroundColor: AppColors.surface,
+                ),
               ),
             ),
         ],
@@ -291,10 +356,7 @@ class _ReceiptsScreenState extends State<ReceiptsScreen> {
             child: Padding(
               padding: const EdgeInsets.all(24.0),
               child: points == null
-                  ? Image.file(
-                      File(item.image.filePath),
-                      fit: BoxFit.contain,
-                    )
+                  ? _buildPlainImageWithBoxes(item)
                   : _buildWarpedImage(item, points),
             ),
           ),
@@ -311,6 +373,41 @@ class _ReceiptsScreenState extends State<ReceiptsScreen> {
           ),
         ),
       ],
+    );
+  }
+
+  Widget _buildPlainImageWithBoxes(ReceiptData item) {
+    final boxes = _ocrBoxes;
+    final ocrSize = _ocrSize;
+    if (boxes == null || ocrSize == null || ocrSize.width <= 0 || ocrSize.height <= 0) {
+      return Image.file(File(item.image.filePath), fit: BoxFit.contain);
+    }
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final cw = constraints.maxWidth;
+        final ch = constraints.maxHeight;
+        final scale = math.min(cw / ocrSize.width, ch / ocrSize.height);
+        final dw = ocrSize.width * scale;
+        final dh = ocrSize.height * scale;
+        final ox = (cw - dw) / 2;
+        final oy = (ch - dh) / 2;
+        return SizedBox(
+          width: cw,
+          height: ch,
+          child: Stack(
+            children: [
+              Image.file(File(item.image.filePath), width: cw, height: ch, fit: BoxFit.contain),
+              ...boxes.map((box) => Positioned(
+                left: ox + box.x1 * scale,
+                top: oy + box.y1 * scale,
+                width: (box.x2 - box.x1) * scale,
+                height: (box.y2 - box.y1) * scale,
+                child: _buildWordBox(box),
+              )),
+            ],
+          ),
+        );
+      },
     );
   }
 
@@ -338,28 +435,45 @@ class _ReceiptsScreenState extends State<ReceiptsScreen> {
             destWidth: destWidth, destHeight: destHeight,
           );
 
+          final boxes = _ocrBoxes;
+          final ocrSize = _ocrSize;
+          final scaleX = (ocrSize != null && ocrSize.width > 0) ? destWidth / ocrSize.width : 1.0;
+          final scaleY = (ocrSize != null && ocrSize.height > 0) ? destHeight / ocrSize.height : 1.0;
+
           return Center(
             child: SizedBox(
               width: destWidth,
               height: destHeight,
-              child: ClipRect(
-                child: Transform(
-                  transform: matrix,
-                  alignment: Alignment.topLeft,
-                  child: OverflowBox(
-                    alignment: Alignment.topLeft,
-                    maxWidth: size.width,
-                    maxHeight: size.height,
-                    child: SizedBox(
-                      width: size.width,
-                      height: size.height,
-                      child: Image.file(
-                        File(item.image.filePath),
-                        fit: BoxFit.fill,
+              child: Stack(
+                children: [
+                  ClipRect(
+                    child: Transform(
+                      transform: matrix,
+                      alignment: Alignment.topLeft,
+                      child: OverflowBox(
+                        alignment: Alignment.topLeft,
+                        maxWidth: size.width,
+                        maxHeight: size.height,
+                        child: SizedBox(
+                          width: size.width,
+                          height: size.height,
+                          child: Image.file(
+                            File(item.image.filePath),
+                            fit: BoxFit.fill,
+                          ),
+                        ),
                       ),
                     ),
                   ),
-                ),
+                  if (boxes != null)
+                    ...boxes.map((box) => Positioned(
+                      left: box.x1 * scaleX,
+                      top: box.y1 * scaleY,
+                      width: (box.x2 - box.x1) * scaleX,
+                      height: (box.y2 - box.y1) * scaleY,
+                      child: _buildWordBox(box),
+                    )),
+                ],
               ),
             ),
           );

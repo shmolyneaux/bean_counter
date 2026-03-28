@@ -40,7 +40,7 @@ dependencies:
   file_selector: ^1.1.0
   file_selector_windows: ^0.9.3+5
   crypto: ^3.0.7
-  heic_to_png_jpg: ^0.1.1
+  flusseract: ^0.1.3
 
 dev_dependencies:
   flutter_test:
@@ -67,6 +67,9 @@ flutter:
 
   # An image asset can refer to one or more resolution-specific "variants", see
   # https://flutter.dev/to/resolution-aware-images
+  assets:
+    - assets/tessdata/
+    - assets/tessconfig/
 
   # For details regarding adding assets from package dependencies, see
   # https://flutter.dev/to/asset-from-package

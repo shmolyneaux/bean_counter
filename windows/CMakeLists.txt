@@ -1,5 +1,6 @@
 # Project-level configuration.
 cmake_minimum_required(VERSION 3.14)
+set(CMAKE_TOOLCHAIN_FILE "C:/projects/bean_budget/vcpkg/scripts/buildsystems/vcpkg.cmake" CACHE STRING "")
 project(bean_budget LANGUAGES CXX)
 
 # The name of the executable created for the application. Change this to change
@@ -105,4 +106,11 @@ install(DIRECTORY "${PROJECT_BUILD_DIR}/${FLUTTER_ASSET_DIR_NAME}"
 # Install the AOT library on non-Debug builds only.
 install(FILES "${AOT_LIBRARY}" DESTINATION "${INSTALL_BUNDLE_DATA_DIR}"
   CONFIGURATIONS Profile;Release
+  COMPONENT Runtime)
+
+# Install vcpkg runtime DLLs required by flusseract (tesseract + leptonica + deps).
+set(VCPKG_BIN "${CMAKE_CURRENT_SOURCE_DIR}/../vcpkg/installed/x64-windows/bin")
+file(GLOB VCPKG_DLLS "${VCPKG_BIN}/*.dll")
+install(FILES ${VCPKG_DLLS}
+  DESTINATION "${INSTALL_BUNDLE_LIB_DIR}"
   COMPONENT Runtime)
