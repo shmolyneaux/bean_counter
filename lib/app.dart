@@ -48,7 +48,7 @@ class _AppShellState extends State<AppShell> {
   ];
 
   List<Widget> get _screens => [
-    ReceiptsScreen(notifier: widget.receiptsNotifier),
+    ReceiptsScreen(notifier: widget.receiptsNotifier, categoriesNotifier: widget.categoriesNotifier),
     const StatementsScreen(),
     CategoriesScreen(notifier: widget.categoriesNotifier),
     const ReportsScreen(),

@@ -4,8 +4,10 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:desktop_drop/desktop_drop.dart';
 import 'package:file_selector/file_selector.dart';
+import 'package:bean_budget/core/database/database.dart' hide Image;
 import 'package:bean_budget/core/database/tables.dart';
 import 'package:bean_budget/core/theme/app_theme.dart';
+import 'package:bean_budget/features/categories/categories_notifier.dart';
 import 'package:bean_budget/core/utils/perspective_math.dart';
 import 'package:bean_budget/features/receipts/receipts_notifier.dart';
 import 'package:bean_budget/features/receipts/screens/receipt_cropper.dart';
@@ -13,8 +15,9 @@ import 'package:bean_budget/features/receipts/screens/receipt_verifier.dart';
 
 class ReceiptsScreen extends StatefulWidget {
   final ReceiptsNotifier notifier;
+  final CategoriesNotifier categoriesNotifier;
 
-  const ReceiptsScreen({super.key, required this.notifier});
+  const ReceiptsScreen({super.key, required this.notifier, required this.categoriesNotifier});
 
   @override
   State<ReceiptsScreen> createState() => _ReceiptsScreenState();
@@ -31,14 +34,19 @@ class _ReceiptsScreenState extends State<ReceiptsScreen> {
   void initState() {
     super.initState();
     widget.notifier.addListener(_onNotifierChanged);
+    widget.categoriesNotifier.addListener(_onNotifierChanged);
     if (widget.notifier.receipts.isEmpty && !widget.notifier.isLoading) {
       widget.notifier.load();
+    }
+    if (widget.categoriesNotifier.isEmpty && !widget.categoriesNotifier.isLoading) {
+      widget.categoriesNotifier.load();
     }
   }
 
   @override
   void dispose() {
     widget.notifier.removeListener(_onNotifierChanged);
+    widget.categoriesNotifier.removeListener(_onNotifierChanged);
     super.dispose();
   }
 
@@ -264,17 +272,16 @@ class _ReceiptsScreenState extends State<ReceiptsScreen> {
                     ),
                   ),
                   title: Text(
-                    item.receipt.total != null 
-                        ? '\$${(item.receipt.total! / 100).toStringAsFixed(2)}' 
-                        : 'Unknown Total',
+                    item.store?.name ?? 'Unknown Store',
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                     style: TextStyle(fontWeight: isSelected ? FontWeight.bold : FontWeight.w500),
                   ),
                   subtitle: Text(
-                    item.receipt.dateTime_?.toString().split(' ')[0] ?? 'Unknown Date',
+                    _formatListSubtitle(item),
+                    style: const TextStyle(fontSize: 12),
                   ),
-                  trailing: _buildBadge(item.receipt.status),
+                  trailing: _buildCategoryBadge(item),
                   onTap: () {
                     if (_selectedReceiptId != item.receipt.id) {
                       setState(() {
@@ -482,21 +489,65 @@ class _ReceiptsScreenState extends State<ReceiptsScreen> {
     );
   }
 
-  Widget _buildBadge(String status) {
-    Color c;
-    switch (status) {
-      case 'raw': c = Colors.orange.shade700; break;
-      case 'cropped': c = Colors.blue.shade600; break;
-      case 'extracted': c = Colors.purple.shade500; break;
-      case 'verified': c = AppColors.primary; break;
-      default: c = AppColors.textMuted;
+  String _formatListSubtitle(ReceiptData item) {
+    final date = item.receipt.dateTime_?.toString().split(' ')[0];
+    final total = item.receipt.total != null
+        ? '\$${(item.receipt.total! / 100).toStringAsFixed(2)}'
+        : null;
+    if (date != null && total != null) return '$date  ·  $total';
+    return date ?? total ?? '';
+  }
+
+  Widget _buildCategoryBadge(ReceiptData item) {
+    if (item.receipt.status == 'raw') {
+      return _statusChip('RAW', Colors.orange.shade700);
     }
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-      decoration: BoxDecoration(color: c.withOpacity(0.2), borderRadius: BorderRadius.circular(4)),
-      child: Text(
-        status.toUpperCase(),
-        style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: c),
+    if (item.receipt.status == 'cropped') {
+      return _statusChip('CROPPED', Colors.blue.shade600);
+    }
+
+    final allCategories = widget.categoriesNotifier.flatList;
+    final bool hasTotal = item.receipt.total != null;
+    String? categoryText;
+    bool complete;
+
+    if (item.items.isNotEmpty) {
+      final catIds = item.items.map((i) => i.categoryId).toList();
+      final nonNullIds = catIds.whereType<String>().toSet();
+      complete = catIds.every((id) => id != null) && hasTotal;
+      if (nonNullIds.length == 1) {
+        categoryText = _categoryName(nonNullIds.first, allCategories);
+      } else if (nonNullIds.length > 1) {
+        categoryText = 'Mixed';
+      }
+    } else {
+      final catId = item.receipt.categoryId;
+      complete = catId != null && hasTotal;
+      if (catId != null) categoryText = _categoryName(catId, allCategories);
+    }
+
+    if (categoryText == null) return const SizedBox.shrink();
+    final color = complete ? AppColors.primary : Colors.orange.shade600;
+    return _statusChip(categoryText, color);
+  }
+
+  String _categoryName(String id, List<Category> all) {
+    for (final c in all) { if (c.id == id) return c.name; }
+    return id;
+  }
+
+  Widget _statusChip(String label, Color color) {
+    return ConstrainedBox(
+      constraints: const BoxConstraints(maxWidth: 100),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+        decoration: BoxDecoration(color: color.withOpacity(0.2), borderRadius: BorderRadius.circular(4)),
+        child: Text(
+          label,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: color),
+        ),
       ),
     );
   }

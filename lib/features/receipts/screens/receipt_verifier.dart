@@ -205,7 +205,7 @@ class _ReceiptDetailsPanelState extends State<ReceiptDetailsPanel> {
   }
 
   void _initValues() {
-    _date = widget.item.receipt.dateTime_ ?? DateTime.now();
+    _date = widget.item.receipt.dateTime_;
     _totalController = TextEditingController(
       text: widget.item.receipt.total != null 
           ? (widget.item.receipt.total! / 100).toStringAsFixed(2) 
