@@ -67,7 +67,7 @@ Statement
 ├── account_last_four (String)
 ├── statement_period_start (Date)
 ├── statement_period_end (Date)
-├── file_path (String — original PDF/CSV)
+├── file_path (String — original PDF)
 ├── created_at
 └── lines: List<StatementLine>
 ```
@@ -125,23 +125,6 @@ Image
 └── created_at
 ```
 
-### CsvProfile
-Stores column mapping for a bank's CSV format so it doesn't need to be re-mapped on each import.
-
-```
-CsvProfile
-├── id (UUID)
-├── name (String — e.g., "TD Visa CSV")
-├── date_column (int)
-├── payee_column (int)
-├── amount_column (int)
-├── delimiter (String, default ",")
-├── has_header_row (bool)
-├── date_format (String — e.g., "MM/dd/yyyy")
-├── created_at
-└── updated_at
-```
-
 ---
 
 ## Architecture
@@ -156,7 +139,7 @@ lib/
 │   ├── database/          # drift DB setup, tables, DAOs, migrations
 │   ├── models/            # Plain Dart classes for domain models
 │   ├── repositories/      # Data access layer (wraps drift DAOs)
-│   ├── services/          # Business logic (CSV parsing, payee matching)
+│   ├── services/          # Business logic (PDF parsing, payee matching)
 │   ├── theme/             # App theme, colors, typography
 │   └── utils/             # Currency formatters, date helpers
 ├── features/
@@ -164,8 +147,8 @@ lib/
 │   │   ├── screens/       # Receipt list, detail, crop, annotate
 │   │   └── widgets/       # Receipt card, item editor, image viewer
 │   ├── statements/
-│   │   ├── screens/       # Statement list, detail, CSV import
-│   │   └── widgets/       # Statement line row, column mapper
+│   │   ├── screens/       # Statement list, detail, PDF import
+│   │   └── widgets/       # Statement line row, import review
 │   ├── categories/
 │   │   ├── screens/       # Category list, edit, payee rules
 │   │   └── widgets/       # Category picker, color/icon picker
@@ -207,7 +190,7 @@ App Documents Directory/
 ├── images/
 │   ├── originals/         # Uncropped receipt photos
 │   └── cropped/           # Cropped receipt images
-├── statements/            # Original PDF/CSV files
+├── statements/            # Original PDF files
 └── database/
     └── bean_budget.db
 ```
@@ -216,15 +199,15 @@ App Documents Directory/
 
 ## Statement Parsing
 
-### CSV Parsing
-- Use the **`csv`** Dart package
-- Different banks use different column layouts — build a **column mapper UI** on first import
-- Save the mapping as a **CsvProfile** per bank source, so subsequent imports auto-map
-
-### PDF Parsing (Phase 2)
+### PDF Parsing
 - Use **`pdfx`** for text extraction from PDF statements
-- Bank-specific parsing will be needed — start with one bank's format and expand
-- PDF support comes after CSV is solid
+- Bank-specific parsing required — each bank lays out its transaction table differently
+- Known formats to support:
+  - **CIBC Costco Mastercard**: columns are Trans Date, Post Date, Description, Spend Category, Amount
+  - **RBC Rewards Visa Gold**: columns are Transaction Date, Posting Date, Activity Description, Amount
+- Parser extracts: account last four digits, statement period start/end, and each transaction row (date, payee, amount)
+- Credits (negative amounts) and payments are excluded — only expense lines are imported
+- If text extraction fails or produces no rows, surface an error and allow the user to enter transactions manually
 
 ---
 
@@ -277,9 +260,8 @@ The Receipts tab should prominently surface receipts that need attention (not ye
 |---|---|---|
 | Database | `drift` + `sqlite3_flutter_libs` | Type-safe SQLite |
 | Code Generation | `drift_dev` + `build_runner` | Generate drift code |
-| File Picking | `file_picker` | PDF/CSV/image import |
-| CSV Parsing | `csv` | Statement CSV import |
-| PDF Text (Phase 2) | `pdfx` | PDF statement text extraction |
+| File Picking | `file_picker` | PDF/image import |
+| PDF Text | `pdfx` | PDF statement text extraction |
 | UUID | `uuid` | Generate unique IDs |
 | Formatting | `intl` | Currency/date display |
 | Path | `path_provider` | App directory access |
@@ -313,8 +295,9 @@ State management, navigation, image cropping, and theming all use Flutter built-
 - Receipt status progression
 
 ### Phase 4 — Statements
-- CSV upload + column mapping UI
-- CsvProfile save/load
+- PDF upload via file picker
+- PDF text extraction + bank-specific parser
+- Import review screen (show parsed lines, flag any extraction errors)
 - Statement list + detail screens
 - Manual category assignment per line
 - PayeeRule auto-categorization on import
@@ -330,4 +313,3 @@ State management, navigation, image cropping, and theming all use Flutter built-
 - Data export/backup (DB + images as zip)
 - Receipt ↔ Statement auto-matching suggestions
 - Search across receipts and statements
-- PDF statement import via `pdfx`
