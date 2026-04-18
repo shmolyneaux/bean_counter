@@ -2,6 +2,15 @@
 
 A Flutter desktop app (Windows) for managing receipts and budgets, with OCR powered by Tesseract via the [flusseract](https://pub.dev/packages/flusseract) plugin.
 
+## Building & Running
+
+```bash
+/z/flutter/bin/flutter run -d windows --release
+```
+
+- Flutter is at `/z/flutter/bin/flutter` (not on PATH)
+- Use `--release` — debug mode has a CMake bug with `kernel_blob.bin`
+
 ## flusseract Windows patches
 
 `flusseract 0.1.3` does not build on Windows out of the box. The following manual patches are required to the pub cache copy of the package at `%LOCALAPPDATA%\Pub\Cache\hosted\pub.dev\flusseract-0.1.3\src\`.

@@ -9,6 +9,18 @@ import 'package:bean_budget/core/repositories/statement_repository.dart';
 const kMixedCategoryId = '__mixed__';
 const kIgnoredCategoryId = '__ignored__';
 
+class StatementStats {
+  final int totalChargeCents;
+  final int categorized;
+  final int uncategorized;
+
+  const StatementStats({
+    required this.totalChargeCents,
+    required this.categorized,
+    required this.uncategorized,
+  });
+}
+
 class ImportedTransaction {
   final String tempId;
   final DateTime date;
@@ -42,6 +54,8 @@ class StatementsNotifier extends ChangeNotifier {
   String? _pendingFilePath;
   String? _pendingSource;
   Map<String, int> _statementLineCounts = {};
+  Map<String, List<StatementLine>> _loadedLines = {};
+  Map<String, StatementStats> _statementStats = {};
 
   bool _isLoading = false;
   bool _isSaving = false;
@@ -58,6 +72,8 @@ class StatementsNotifier extends ChangeNotifier {
   bool get isSaving => _isSaving;
   String? get error => _error;
   Map<String, int> get statementLineCounts => _statementLineCounts;
+  Map<String, List<StatementLine>> get loadedLines => _loadedLines;
+  Map<String, StatementStats> get statementStats => _statementStats;
 
   Future<void> load() async {
     if (_isLoading) return;
@@ -66,9 +82,14 @@ class StatementsNotifier extends ChangeNotifier {
     notifyListeners();
     try {
       _statements = await _repo.getAllStatements();
+      _loadedLines = {};
+      _statementStats = {};
       final counts = <String, int>{};
       for (final s in _statements) {
-        counts[s.id] = await _repo.countLinesForStatement(s.id);
+        final lines = await _repo.getLinesForStatement(s.id);
+        _loadedLines[s.id] = lines;
+        _statementStats[s.id] = _computeStats(lines);
+        counts[s.id] = lines.length;
       }
       _statementLineCounts = counts;
     } catch (e) {
@@ -77,6 +98,42 @@ class StatementsNotifier extends ChangeNotifier {
       _isLoading = false;
       notifyListeners();
     }
+  }
+
+  StatementStats _computeStats(List<StatementLine> lines) {
+    int totalCharge = 0;
+    int categorized = 0;
+    int uncategorized = 0;
+    for (final l in lines) {
+      if (l.amount > 0) totalCharge += l.amount;
+      if (l.categoryId != null) {
+        categorized++;
+      } else {
+        uncategorized++;
+      }
+    }
+    return StatementStats(
+      totalChargeCents: totalCharge,
+      categorized: categorized,
+      uncategorized: uncategorized,
+    );
+  }
+
+  Future<void> updateLineCategory(
+      String statementId, String lineId, String? categoryId) async {
+    await _repo.updateLineCategory(lineId, categoryId);
+    final lines = await _repo.getLinesForStatement(statementId);
+    _loadedLines[statementId] = lines;
+    _statementStats[statementId] = _computeStats(lines);
+    notifyListeners();
+  }
+
+  Future<void> updateLineNotes(
+      String statementId, String lineId, String? notes) async {
+    await _repo.updateLineNotes(lineId, notes?.isEmpty == true ? null : notes);
+    final lines = await _repo.getLinesForStatement(statementId);
+    _loadedLines[statementId] = lines;
+    notifyListeners();
   }
 
   Future<void> importPdf() async {

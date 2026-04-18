@@ -53,6 +53,14 @@ class ReceiptsNotifier extends ChangeNotifier {
           }
         }
       }
+      results.sort((a, b) {
+        final da = a.receipt.dateTime_;
+        final db = b.receipt.dateTime_;
+        if (da == null && db == null) return 0;
+        if (da == null) return -1;
+        if (db == null) return 1;
+        return db.compareTo(da);
+      });
       _receipts = results;
     } catch (e) {
       _error = e.toString();
@@ -188,7 +196,7 @@ else:
     print(json.dumps({'x0': cx/w, 'y0': cy/h, 'x1': (cx+cw)/w, 'y1': (cy+ch)/h}))
 """;
     final wslPath = _toWslPath(imagePath);
-    final result = await Process.run('wsl', ['python3.8', '-c', script, wslPath]);
+    final result = await Process.run('wsl', ['python3.10', '-c', script, wslPath]);
     if (result.exitCode != 0) return null;
     final output = (result.stdout as String).trim();
     if (output == 'null' || output.isEmpty) return null;

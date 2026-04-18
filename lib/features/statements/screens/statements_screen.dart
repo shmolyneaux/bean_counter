@@ -27,6 +27,7 @@ class StatementsScreen extends StatefulWidget {
 
 class _StatementsScreenState extends State<StatementsScreen> {
   final _scrollController = ScrollController();
+  final _expandedIds = <String>{};
 
   @override
   void initState() {
@@ -190,78 +191,233 @@ class _StatementsScreenState extends State<StatementsScreen> {
   }
 
   Widget _buildStatementCard(Statement statement) {
-    final count = widget.notifier.statementLineCounts[statement.id] ?? 0;
+    final stats = widget.notifier.statementStats[statement.id];
+    final lines = widget.notifier.loadedLines[statement.id] ?? [];
     final period =
         '${_dateFmt.format(statement.statementPeriodStart)} – ${_dateFmt.format(statement.statementPeriodEnd)}';
-    final fileName =
-        statement.filePath.split(r'\').last.split('/').last;
+    final fileName = statement.filePath.split(r'\').last.split('/').last;
     final isCard = statement.source.toLowerCase().contains('visa') ||
         statement.source.toLowerCase().contains('mastercard');
+    final isExpanded = _expandedIds.contains(statement.id);
 
     return Card(
       margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 5),
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-        child: Row(
-          children: [
-            Container(
-              width: 44,
-              height: 44,
-              decoration: BoxDecoration(
-                color: AppColors.surfaceBright,
-                borderRadius: BorderRadius.circular(10),
-              ),
-              child: Icon(
-                isCard
-                    ? Icons.credit_card_rounded
-                    : Icons.account_balance_rounded,
-                color: AppColors.primary,
-                size: 22,
-              ),
-            ),
-            const SizedBox(width: 14),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
+      child: Column(
+        children: [
+          // ── Header row ──────────────────────────────────────────────────
+          InkWell(
+            onTap: () => setState(() {
+              if (isExpanded) {
+                _expandedIds.remove(statement.id);
+              } else {
+                _expandedIds.add(statement.id);
+              }
+            }),
+            borderRadius: isExpanded
+                ? const BorderRadius.vertical(top: Radius.circular(12))
+                : BorderRadius.circular(12),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+              child: Row(
                 children: [
-                  Text(statement.source,
+                  Container(
+                    width: 44,
+                    height: 44,
+                    decoration: BoxDecoration(
+                      color: AppColors.surfaceBright,
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    child: Icon(
+                      isCard
+                          ? Icons.credit_card_rounded
+                          : Icons.account_balance_rounded,
+                      color: AppColors.primary,
+                      size: 22,
+                    ),
+                  ),
+                  const SizedBox(width: 14),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(statement.source,
+                            style: const TextStyle(
+                                fontWeight: FontWeight.w600,
+                                fontSize: 14,
+                                color: AppColors.textPrimary)),
+                        const SizedBox(height: 2),
+                        Text(period,
+                            style: const TextStyle(
+                                fontSize: 13, color: AppColors.textSecondary)),
+                        const SizedBox(height: 2),
+                        Text(fileName,
+                            style: const TextStyle(
+                                fontSize: 11, color: AppColors.textMuted),
+                            overflow: TextOverflow.ellipsis),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  // Total charges
+                  if (stats != null) ...[
+                    Text(
+                      _fmtAmount(stats.totalChargeCents),
                       style: const TextStyle(
-                          fontWeight: FontWeight.w600,
                           fontSize: 14,
-                          color: AppColors.textPrimary)),
-                  const SizedBox(height: 2),
-                  Text(period,
-                      style: const TextStyle(
-                          fontSize: 13, color: AppColors.textSecondary)),
-                  const SizedBox(height: 2),
-                  Text(fileName,
-                      style: const TextStyle(
-                          fontSize: 11, color: AppColors.textMuted),
-                      overflow: TextOverflow.ellipsis),
+                          fontWeight: FontWeight.w600,
+                          color: AppColors.textPrimary),
+                    ),
+                    const SizedBox(width: 10),
+                    // Categorized / uncategorized chips
+                    if (stats.uncategorized == 0)
+                      _chip('${stats.categorized} categorized', AppColors.success)
+                    else ...[
+                      _chip('${stats.categorized} categorized', AppColors.success),
+                      const SizedBox(width: 6),
+                      _chip('${stats.uncategorized} uncategorized', AppColors.warning),
+                    ],
+                    const SizedBox(width: 8),
+                  ],
+                  // Expand / collapse arrow
+                  Icon(
+                    isExpanded
+                        ? Icons.keyboard_arrow_up_rounded
+                        : Icons.keyboard_arrow_down_rounded,
+                    size: 20,
+                    color: AppColors.textMuted,
+                  ),
+                  const SizedBox(width: 4),
+                  IconButton(
+                    icon: const Icon(Icons.delete_outline_rounded,
+                        size: 18, color: AppColors.textMuted),
+                    tooltip: 'Delete',
+                    onPressed: () => _confirmDelete(statement),
+                  ),
                 ],
               ),
             ),
-            const SizedBox(width: 12),
+          ),
+          // ── Expanded transaction rows ────────────────────────────────────
+          if (isExpanded) ...[
+            const Divider(height: 1),
+            _buildSavedLinesTable(statement, lines),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _buildSavedLinesTable(Statement statement, List<StatementLine> lines) {
+    if (lines.isEmpty) {
+      return const Padding(
+        padding: EdgeInsets.symmetric(vertical: 20),
+        child: Center(
+          child: Text('No transactions',
+              style: TextStyle(fontSize: 13, color: AppColors.textMuted)),
+        ),
+      );
+    }
+    const s = TextStyle(
+      fontSize: 11,
+      fontWeight: FontWeight.w600,
+      color: AppColors.textMuted,
+      letterSpacing: 0.5,
+    );
+    return Column(
+      children: [
+        // Table header
+        Container(
+          color: AppColors.surface,
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+          child: const Row(
+            children: [
+              SizedBox(width: 92, child: Text('DATE', style: s)),
+              Expanded(
+                  child: Padding(
+                      padding: EdgeInsets.only(left: 8),
+                      child: Text('DESCRIPTION', style: s))),
+              SizedBox(
+                  width: 100,
+                  child: Text('AMOUNT', style: s, textAlign: TextAlign.right)),
+              SizedBox(width: 12),
+              SizedBox(width: 210, child: Text('CATEGORY', style: s)),
+              SizedBox(width: 12),
+              Expanded(child: Text('NOTES', style: s)),
+            ],
+          ),
+        ),
+        const Divider(height: 1),
+        // Rows
+        ...lines.map((line) => _buildSavedLineRow(statement, line)),
+      ],
+    );
+  }
+
+  Widget _buildSavedLineRow(Statement statement, StatementLine line) {
+    return _SavedLineRow(
+      key: ValueKey(line.id),
+      line: line,
+      statement: statement,
+      categoryButton: _buildSavedLineCategoryButton(statement, line),
+      amountColor: _amountColor(line.amount),
+      formattedAmount: _fmtAmount(line.amount),
+      formattedDate: _shortDateFmt.format(line.date),
+      onSaveNotes: (notes) =>
+          widget.notifier.updateLineNotes(statement.id, line.id, notes),
+    );
+  }
+
+  Widget _buildSavedLineCategoryButton(Statement statement, StatementLine line) {
+    final cats = widget.categoriesNotifier.flatList;
+    return PopupMenuButton<String?>(
+      tooltip: '',
+      onSelected: (value) =>
+          widget.notifier.updateLineCategory(statement.id, line.id, value),
+      itemBuilder: (_) => [
+        PopupMenuItem<String?>(
+          value: null,
+          child: Text('— Uncategorized —',
+              style: TextStyle(color: AppColors.textMuted, fontSize: 13)),
+        ),
+        if (cats.isNotEmpty) const PopupMenuDivider(),
+        ...cats.map((c) => PopupMenuItem<String?>(
+              value: c.id,
+              child: Row(children: [
+                Container(
+                    width: 8,
+                    height: 8,
+                    decoration: BoxDecoration(
+                        shape: BoxShape.circle, color: Color(c.color))),
+                const SizedBox(width: 10),
+                Text(c.name, style: const TextStyle(fontSize: 13)),
+              ]),
+            )),
+      ],
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+        decoration: BoxDecoration(
+          color: AppColors.surfaceElevated,
+          borderRadius: BorderRadius.circular(6),
+          border: Border.all(color: AppColors.border),
+        ),
+        child: Row(
+          children: [
             Container(
-              padding:
-                  const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-              decoration: BoxDecoration(
-                color: AppColors.surfaceBright,
-                borderRadius: BorderRadius.circular(12),
-              ),
-              child: Text('$count txns',
+                width: 8,
+                height: 8,
+                decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    color: _categoryDotColor(line.categoryId))),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(_categoryLabel(line.categoryId),
                   style: const TextStyle(
-                      fontSize: 12,
-                      color: AppColors.textSecondary,
-                      fontWeight: FontWeight.w500)),
+                      fontSize: 12, color: AppColors.textPrimary),
+                  overflow: TextOverflow.ellipsis),
             ),
             const SizedBox(width: 4),
-            IconButton(
-              icon: const Icon(Icons.delete_outline_rounded,
-                  size: 18, color: AppColors.textMuted),
-              tooltip: 'Delete',
-              onPressed: () => _confirmDelete(statement),
-            ),
+            const Icon(Icons.expand_more_rounded,
+                size: 14, color: AppColors.textMuted),
           ],
         ),
       ),
@@ -687,6 +843,151 @@ class _StatementsScreenState extends State<StatementsScreen> {
       ),
     );
     if (ok == true) widget.notifier.discardImport();
+  }
+}
+
+// ── Saved line row ────────────────────────────────────────────────────────
+
+class _SavedLineRow extends StatefulWidget {
+  final StatementLine line;
+  final Statement statement;
+  final Widget categoryButton;
+  final Color amountColor;
+  final String formattedAmount;
+  final String formattedDate;
+  final void Function(String?) onSaveNotes;
+
+  const _SavedLineRow({
+    super.key,
+    required this.line,
+    required this.statement,
+    required this.categoryButton,
+    required this.amountColor,
+    required this.formattedAmount,
+    required this.formattedDate,
+    required this.onSaveNotes,
+  });
+
+  @override
+  State<_SavedLineRow> createState() => _SavedLineRowState();
+}
+
+class _SavedLineRowState extends State<_SavedLineRow> {
+  late final TextEditingController _notesCtrl;
+  late final FocusNode _notesFocus;
+
+  @override
+  void initState() {
+    super.initState();
+    _notesCtrl = TextEditingController(text: widget.line.notes ?? '');
+    _notesFocus = FocusNode();
+    _notesFocus.addListener(() {
+      if (!_notesFocus.hasFocus) _save();
+    });
+  }
+
+  @override
+  void didUpdateWidget(_SavedLineRow old) {
+    super.didUpdateWidget(old);
+    // Sync if the note was changed externally (e.g. reload), but only when
+    // this field isn't currently being edited.
+    if (old.line.notes != widget.line.notes && !_notesFocus.hasFocus) {
+      _notesCtrl.text = widget.line.notes ?? '';
+    }
+  }
+
+  @override
+  void dispose() {
+    _notesCtrl.dispose();
+    _notesFocus.dispose();
+    super.dispose();
+  }
+
+  void _save() {
+    final text = _notesCtrl.text.trim();
+    final current = widget.line.notes ?? '';
+    if (text != current) widget.onSaveNotes(text.isEmpty ? null : text);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final uncategorized = widget.line.categoryId == null;
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Container(
+          color: uncategorized ? AppColors.error.withAlpha(20) : null,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 5),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.center,
+            children: [
+              SizedBox(
+                width: 92,
+                child: Text(
+                  widget.formattedDate,
+                  style: const TextStyle(
+                      fontSize: 13, color: AppColors.textSecondary),
+                ),
+              ),
+              Expanded(
+                child: Padding(
+                  padding: const EdgeInsets.only(left: 8),
+                  child: Text(widget.line.payee,
+                      style: const TextStyle(
+                          fontSize: 13, color: AppColors.textPrimary),
+                      overflow: TextOverflow.ellipsis),
+                ),
+              ),
+              SizedBox(
+                width: 100,
+                child: Text(
+                  widget.formattedAmount,
+                  style: TextStyle(
+                    fontSize: 13,
+                    color: widget.amountColor,
+                    fontWeight: FontWeight.w500,
+                  ),
+                  textAlign: TextAlign.right,
+                ),
+              ),
+              const SizedBox(width: 12),
+              SizedBox(width: 210, child: widget.categoryButton),
+              const SizedBox(width: 12),
+              Expanded(
+                child: TextField(
+                  controller: _notesCtrl,
+                  focusNode: _notesFocus,
+                  onSubmitted: (_) => _save(),
+                  style: const TextStyle(
+                      fontSize: 12, color: AppColors.textSecondary),
+                  decoration: InputDecoration(
+                    hintText: 'Add a note…',
+                    hintStyle: const TextStyle(
+                        fontSize: 12, color: AppColors.textMuted),
+                    isDense: true,
+                    contentPadding: const EdgeInsets.symmetric(
+                        horizontal: 6, vertical: 7),
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(6),
+                      borderSide:
+                          const BorderSide(color: AppColors.border),
+                    ),
+                    enabledBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(6),
+                      borderSide:
+                          const BorderSide(color: AppColors.border),
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+        ),
+        const Divider(height: 1, indent: 12, endIndent: 12),
+      ],
+    );
   }
 }
 

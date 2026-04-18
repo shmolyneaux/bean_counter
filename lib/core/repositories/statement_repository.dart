@@ -86,6 +86,18 @@ class StatementRepository {
         .get();
   }
 
+  Future<void> updateLineCategory(String lineId, String? categoryId) async {
+    await (_db.update(_db.statementLines)
+          ..where((l) => l.id.equals(lineId)))
+        .write(StatementLinesCompanion(categoryId: Value(categoryId)));
+  }
+
+  Future<void> updateLineNotes(String lineId, String? notes) async {
+    await (_db.update(_db.statementLines)
+          ..where((l) => l.id.equals(lineId)))
+        .write(StatementLinesCompanion(notes: Value(notes)));
+  }
+
   Future<void> deleteStatement(String statementId) async {
     await (_db.delete(_db.statementLines)
           ..where((l) => l.statementId.equals(statementId)))
