@@ -319,6 +319,7 @@ class StatementsNotifier extends ChangeNotifier {
       _pending = [];
       _pendingFilePath = null;
       _pendingSource = null;
+      _isSaving = false;
       await load();
     } catch (e) {
       _error = e.toString();
@@ -620,9 +621,9 @@ def parse_rbc_savings(pdf) -> list:
             if not current_date or not r['description']:
                 continue
             for v in r['withdrawals']:
-                transactions.append({'date': current_date, 'description': r['description'], 'amount': -v})
-            for v in r['deposits']:
                 transactions.append({'date': current_date, 'description': r['description'], 'amount': v})
+            for v in r['deposits']:
+                transactions.append({'date': current_date, 'description': r['description'], 'amount': -v})
     return transactions
 
 

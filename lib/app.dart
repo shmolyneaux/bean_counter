@@ -8,17 +8,20 @@ import 'package:bean_budget/features/transactions/screens/transactions_screen.da
 import 'package:bean_budget/features/categories/screens/categories_screen.dart';
 import 'package:bean_budget/features/categories/categories_notifier.dart';
 import 'package:bean_budget/features/reports/screens/reports_screen.dart';
+import 'package:bean_budget/features/reports/reports_notifier.dart';
 
 class AppShell extends StatefulWidget {
   final CategoriesNotifier categoriesNotifier;
   final ReceiptsNotifier receiptsNotifier;
   final StatementsNotifier statementsNotifier;
+  final ReportsNotifier reportsNotifier;
 
   const AppShell({
     super.key,
     required this.categoriesNotifier,
     required this.receiptsNotifier,
     required this.statementsNotifier,
+    required this.reportsNotifier,
   });
 
   @override
@@ -69,7 +72,7 @@ class _AppShellState extends State<AppShell> {
           categoriesNotifier: widget.categoriesNotifier,
         ),
         CategoriesScreen(notifier: widget.categoriesNotifier),
-        const ReportsScreen(),
+        ReportsScreen(notifier: widget.reportsNotifier),
       ];
 
   @override
