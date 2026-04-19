@@ -56,6 +56,10 @@ class StatementsNotifier extends ChangeNotifier {
   Map<String, int> _statementLineCounts = {};
   Map<String, List<StatementLine>> _loadedLines = {};
   Map<String, StatementStats> _statementStats = {};
+  // receiptId → categoryId for all linked receipts
+  Map<String, String?> _receiptCategoryIds = {};
+  Set<int> _exactMatchAmounts = {};
+  final Set<String> _suppressedMatchLineIds = {};
 
   bool _isLoading = false;
   bool _isSaving = false;
@@ -75,6 +79,27 @@ class StatementsNotifier extends ChangeNotifier {
   Map<String, List<StatementLine>> get loadedLines => _loadedLines;
   Map<String, StatementStats> get statementStats => _statementStats;
 
+  bool hasExactReceiptMatch(StatementLine line) =>
+      line.receiptId == null &&
+      !_suppressedMatchLineIds.contains(line.id) &&
+      _exactMatchAmounts.contains(line.amount.abs());
+
+  void suppressExactMatch(String lineId) {
+    _suppressedMatchLineIds.add(lineId);
+    notifyListeners();
+  }
+
+  /// Returns the effective category for display:
+  /// - receipt's own categoryId if set
+  /// - '__mixed__' if the receipt is itemized (has any items)
+  /// - the line's own categoryId otherwise
+  String? effectiveCategoryId(StatementLine line) {
+    if (line.receiptId != null && _receiptCategoryIds.containsKey(line.receiptId)) {
+      return _receiptCategoryIds[line.receiptId];
+    }
+    return line.categoryId;
+  }
+
   Future<void> load() async {
     if (_isLoading) return;
     _isLoading = true;
@@ -85,13 +110,22 @@ class StatementsNotifier extends ChangeNotifier {
       _loadedLines = {};
       _statementStats = {};
       final counts = <String, int>{};
+      final allReceiptIds = <String>[];
       for (final s in _statements) {
         final lines = await _repo.getLinesForStatement(s.id);
         _loadedLines[s.id] = lines;
         _statementStats[s.id] = _computeStats(lines);
         counts[s.id] = lines.length;
+        allReceiptIds.addAll(lines.map((l) => l.receiptId).whereType<String>());
       }
       _statementLineCounts = counts;
+      _receiptCategoryIds = await _repo.getReceiptCategoryIds(allReceiptIds);
+      final unlinkedAmounts = _loadedLines.values
+          .expand((l) => l)
+          .where((l) => l.receiptId == null)
+          .map((l) => l.amount)
+          .toList();
+      _exactMatchAmounts = await _repo.getExactMatchAmounts(unlinkedAmounts);
     } catch (e) {
       _error = e.toString();
     } finally {
@@ -133,6 +167,20 @@ class StatementsNotifier extends ChangeNotifier {
     await _repo.updateLineNotes(lineId, notes?.isEmpty == true ? null : notes);
     final lines = await _repo.getLinesForStatement(statementId);
     _loadedLines[statementId] = lines;
+    notifyListeners();
+  }
+
+  Future<void> updateLineReceipt(
+      String statementId, String lineId, String? receiptId) async {
+    await _repo.updateLineReceipt(lineId, receiptId);
+    final lines = await _repo.getLinesForStatement(statementId);
+    _loadedLines[statementId] = lines;
+    final allReceiptIds = _loadedLines.values
+        .expand((l) => l)
+        .map((l) => l.receiptId)
+        .whereType<String>()
+        .toList();
+    _receiptCategoryIds = await _repo.getReceiptCategoryIds(allReceiptIds);
     notifyListeners();
   }
 

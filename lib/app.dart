@@ -4,6 +4,7 @@ import 'package:bean_budget/features/receipts/screens/receipts_screen.dart';
 import 'package:bean_budget/features/receipts/receipts_notifier.dart';
 import 'package:bean_budget/features/statements/screens/statements_screen.dart';
 import 'package:bean_budget/features/statements/statements_notifier.dart';
+import 'package:bean_budget/features/transactions/screens/transactions_screen.dart';
 import 'package:bean_budget/features/categories/screens/categories_screen.dart';
 import 'package:bean_budget/features/categories/categories_notifier.dart';
 import 'package:bean_budget/features/reports/screens/reports_screen.dart';
@@ -39,6 +40,11 @@ class _AppShellState extends State<AppShell> {
       label: 'Statements',
     ),
     _NavDestination(
+      icon: Icons.view_list_outlined,
+      selectedIcon: Icons.view_list_rounded,
+      label: 'Transactions',
+    ),
+    _NavDestination(
       icon: Icons.category_outlined,
       selectedIcon: Icons.category_rounded,
       label: 'Categories',
@@ -55,6 +61,10 @@ class _AppShellState extends State<AppShell> {
             notifier: widget.receiptsNotifier,
             categoriesNotifier: widget.categoriesNotifier),
         StatementsScreen(
+          notifier: widget.statementsNotifier,
+          categoriesNotifier: widget.categoriesNotifier,
+        ),
+        TransactionsScreen(
           notifier: widget.statementsNotifier,
           categoriesNotifier: widget.categoriesNotifier,
         ),

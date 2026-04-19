@@ -86,6 +86,40 @@ class StatementRepository {
         .get();
   }
 
+  /// Returns the effective categoryId for each receipt:
+  /// - the receipt's own categoryId if set, or
+  /// - '__mixed__' if the receipt is itemized (has any items), or
+  /// - null if truly uncategorized.
+  Future<Map<String, String?>> getReceiptCategoryIds(
+      List<String> receiptIds) async {
+    if (receiptIds.isEmpty) return {};
+    final receipts = await (_db.select(_db.receipts)
+          ..where((r) => r.id.isIn(receiptIds)))
+        .get();
+    final result = <String, String?>{};
+    for (final r in receipts) {
+      if (r.categoryId != null) {
+        result[r.id] = r.categoryId;
+      } else {
+        final items = await (_db.select(_db.receiptItems)
+              ..where((i) => i.receiptId.equals(r.id)))
+            .get();
+        result[r.id] = items.isNotEmpty ? '__mixed__' : null;
+      }
+    }
+    return result;
+  }
+
+  /// Returns the set of absolute cent amounts that have at least one exact receipt match.
+  Future<Set<int>> getExactMatchAmounts(List<int> amounts) async {
+    if (amounts.isEmpty) return {};
+    final absAmounts = amounts.map((a) => a.abs()).toSet();
+    final receipts = await (_db.select(_db.receipts)
+          ..where((r) => r.total.isNotNull()))
+        .get();
+    return absAmounts.where((a) => receipts.any((r) => r.total == a)).toSet();
+  }
+
   Future<void> updateLineCategory(String lineId, String? categoryId) async {
     await (_db.update(_db.statementLines)
           ..where((l) => l.id.equals(lineId)))
@@ -96,6 +130,12 @@ class StatementRepository {
     await (_db.update(_db.statementLines)
           ..where((l) => l.id.equals(lineId)))
         .write(StatementLinesCompanion(notes: Value(notes)));
+  }
+
+  Future<void> updateLineReceipt(String lineId, String? receiptId) async {
+    await (_db.update(_db.statementLines)
+          ..where((l) => l.id.equals(lineId)))
+        .write(StatementLinesCompanion(receiptId: Value(receiptId)));
   }
 
   Future<void> deleteStatement(String statementId) async {

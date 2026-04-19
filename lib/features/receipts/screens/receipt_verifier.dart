@@ -1,19 +1,20 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 import 'dart:math' as math;
 import 'dart:typed_data';
 import 'dart:ui' as ui;
-import 'package:flutter/foundation.dart' show compute;
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:drift/drift.dart' hide Column;
+import 'package:path_provider/path_provider.dart';
+import 'package:path/path.dart' as p;
 import 'package:bean_budget/core/database/database.dart' hide Image;
 import 'package:bean_budget/core/database/tables.dart' hide Image;
 import 'package:bean_budget/core/theme/app_theme.dart';
 import 'package:bean_budget/core/utils/perspective_math.dart';
 import 'package:bean_budget/features/receipts/receipts_notifier.dart';
 import 'package:bean_budget/features/categories/widgets/category_pickers.dart';
-import 'package:flusseract/flusseract.dart' as flusseract;
 
 class OcrBox {
   final String word;
@@ -31,18 +32,6 @@ class OcrBox {
   });
 }
 
-Future<List<OcrBox>> _runOcrInBackground((Uint8List, String) args) async {
-  final pixImage = flusseract.PixImage.fromBytes(args.$1);
-  final tess = flusseract.Tesseract(tessDataPath: args.$2);
-  await tess.utf8Text(pixImage);
-  final raw = tess.getBoundingBoxes(flusseract.PageIteratorLevel.word);
-  return raw.map((b) => OcrBox(
-    word: b.word, confidence: b.confidence,
-    x1: b.x1, y1: b.y1, x2: b.x2, y2: b.y2,
-    blockNum: b.blockNum, parNum: b.parNum,
-    lineNum: b.lineNum, wordNum: b.wordNum,
-  )).toList();
-}
 
 class ReceiptDetailsPanel extends StatefulWidget {
   final ReceiptData item;
@@ -77,10 +66,18 @@ class _ReceiptDetailsPanelState extends State<ReceiptDetailsPanel> {
   
   bool _isOcrRunning = false;
 
-  // Cache keyed by "receiptId/imageId/cropHash" — persists for the app session.
+  // In-memory cache keyed by "receiptId/imageId/cropHash".
   static final Map<String, (List<OcrBox>?, Size?)> _ocrCache = {};
-  String get _cacheKey =>
-      '${widget.item.receipt.id}/${widget.item.image.id}/${widget.item.receipt.cropPoints?.hashCode}';
+  static Directory? _ocrCacheDir;
+
+  String get _cacheKey {
+    final crop = widget.item.receipt.cropPoints;
+    final cropKey = crop == null ? 'none' : const CropPointsConverter().toSql(crop);
+    return '${widget.item.receipt.id}/${widget.item.image.id}/$cropKey';
+  }
+
+  // Stable filename for disk cache — just the receipt ID.
+  String get _cacheFileName => '${widget.item.receipt.id}.json';
 
   @override
   void initState() {
@@ -105,11 +102,23 @@ class _ReceiptDetailsPanelState extends State<ReceiptDetailsPanel> {
   Future<void> _extractOcrText() async {
     if (_isOcrRunning) return;
 
-    // Return cached result immediately if available.
+    // Capture identity before any await — widget may be updated while we run.
+    final receiptId = widget.item.receipt.id;
     final key = _cacheKey;
+    final fileName = _cacheFileName;
+
+    // 1. In-memory cache.
     if (_ocrCache.containsKey(key)) {
       final (boxes, size) = _ocrCache[key]!;
-      widget.onOcrComplete(widget.item.receipt.id, boxes, size);
+      widget.onOcrComplete(receiptId, boxes, size);
+      return;
+    }
+
+    // 2. Disk cache.
+    final diskResult = await _loadFromDisk(fileName, key);
+    if (diskResult != null) {
+      _ocrCache[key] = diskResult;
+      widget.onOcrComplete(receiptId, diskResult.$1, diskResult.$2);
       return;
     }
 
@@ -119,7 +128,7 @@ class _ReceiptDetailsPanelState extends State<ReceiptDetailsPanel> {
       final imageFile = File(widget.item.image.filePath);
       if (!await imageFile.exists()) {
         if (mounted) setState(() => _isOcrRunning = false);
-        widget.onOcrComplete(widget.item.receipt.id, null, null);
+        widget.onOcrComplete(receiptId, null, null);
         return;
       }
 
@@ -140,17 +149,114 @@ class _ReceiptDetailsPanelState extends State<ReceiptDetailsPanel> {
       }
       uiImage.dispose();
 
-      // Run Tesseract in a background isolate so it doesn't block the UI.
-      final tessDataPath = flusseract.TessData.tessDataPath as String;
-      final boxes = await compute(_runOcrInBackground, (tessBytes, tessDataPath));
-
-      _ocrCache[key] = (boxes, tessSize);
-      if (mounted) setState(() => _isOcrRunning = false);
-      widget.onOcrComplete(widget.item.receipt.id, boxes, tessSize);
+      // Write to a temp file and run WSL tesseract CLI.
+      final tmpFile = File('${Directory.systemTemp.path}\\ocr_tmp_${DateTime.now().millisecondsSinceEpoch}.png');
+      await tmpFile.writeAsBytes(tessBytes);
+      try {
+        final wslPath = _toWslPath(tmpFile.path);
+        final result = await Process.run('wsl', [
+          'tesseract', wslPath, 'stdout', '--oem', '1', '--psm', '4', 'tsv',
+        ]);
+        final boxes = result.exitCode == 0 ? _parseTsv(result.stdout as String) : <OcrBox>[];
+        _ocrCache[key] = (boxes, tessSize);
+        if (boxes.isNotEmpty) await _saveToDisk(fileName, key, boxes, tessSize);
+        if (mounted) setState(() => _isOcrRunning = false);
+        widget.onOcrComplete(receiptId, boxes, tessSize);
+      } finally {
+        await tmpFile.delete().catchError((_) {});
+      }
     } catch (e) {
       if (mounted) setState(() => _isOcrRunning = false);
-      widget.onOcrComplete(widget.item.receipt.id, null, null);
+      widget.onOcrComplete(receiptId, null, null);
     }
+  }
+
+  static Future<Directory> _getOcrCacheDir() async {
+    if (_ocrCacheDir != null) return _ocrCacheDir!;
+    final appDir = await getApplicationDocumentsDirectory();
+    final dir = Directory(p.join(appDir.path, 'BeanBudget', 'ocr_cache'));
+    await dir.create(recursive: true);
+    _ocrCacheDir = dir;
+    return dir;
+  }
+
+  static Future<(List<OcrBox>, Size)?> _loadFromDisk(String fileName, String key) async {
+    try {
+      final dir = await _getOcrCacheDir();
+      final file = File(p.join(dir.path, fileName));
+      if (!await file.exists()) return null;
+      final map = jsonDecode(await file.readAsString()) as Map<String, dynamic>;
+      // Invalidate if crop points changed since this was written.
+      if (map['key'] != key) return null;
+      final sizeMap = map['size'] as Map<String, dynamic>;
+      final size = Size((sizeMap['w'] as num).toDouble(), (sizeMap['h'] as num).toDouble());
+      final boxes = (map['boxes'] as List<dynamic>).map((b) {
+        final m = b as Map<String, dynamic>;
+        return OcrBox(
+          word: m['w'] as String, confidence: (m['c'] as num).toDouble(),
+          x1: m['x1'] as int, y1: m['y1'] as int,
+          x2: m['x2'] as int, y2: m['y2'] as int,
+          blockNum: m['bn'] as int, parNum: m['pn'] as int,
+          lineNum: m['ln'] as int, wordNum: m['wn'] as int,
+        );
+      }).toList();
+      return (boxes, size);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  static Future<void> _saveToDisk(String fileName, String key, List<OcrBox> boxes, Size size) async {
+    try {
+      final dir = await _getOcrCacheDir();
+      final file = File(p.join(dir.path, fileName));
+      await file.writeAsString(jsonEncode({
+        'key': key,
+        'size': {'w': size.width, 'h': size.height},
+        'boxes': boxes.map((b) => {
+          'w': b.word, 'c': b.confidence,
+          'x1': b.x1, 'y1': b.y1, 'x2': b.x2, 'y2': b.y2,
+          'bn': b.blockNum, 'pn': b.parNum, 'ln': b.lineNum, 'wn': b.wordNum,
+        }).toList(),
+      }));
+    } catch (_) {}
+  }
+
+  static List<OcrBox> _parseTsv(String tsv) {
+    final boxes = <OcrBox>[];
+    final lines = tsv.split('\n');
+    for (int i = 1; i < lines.length; i++) {
+      final line = lines[i].trim();
+      if (line.isEmpty) continue;
+      final cols = line.split('\t');
+      if (cols.length < 12) continue;
+      if ((int.tryParse(cols[0]) ?? 0) != 5) continue; // word level only
+      final conf = double.tryParse(cols[10]) ?? -1;
+      if (conf < 0) continue;
+      final word = cols[11];
+      if (word.trim().isEmpty) continue;
+      final left   = int.tryParse(cols[6]) ?? 0;
+      final top    = int.tryParse(cols[7]) ?? 0;
+      final width  = int.tryParse(cols[8]) ?? 0;
+      final height = int.tryParse(cols[9]) ?? 0;
+      boxes.add(OcrBox(
+        word: word, confidence: conf,
+        x1: left, y1: top, x2: left + width, y2: top + height,
+        blockNum: int.tryParse(cols[2]) ?? 0,
+        parNum:   int.tryParse(cols[3]) ?? 0,
+        lineNum:  int.tryParse(cols[4]) ?? 0,
+        wordNum:  int.tryParse(cols[5]) ?? 0,
+      ));
+    }
+    return boxes;
+  }
+
+  static String _toWslPath(String windowsPath) {
+    final normalized = windowsPath.replaceAll('\\', '/');
+    if (normalized.length >= 2 && normalized[1] == ':') {
+      return '/mnt/${normalized[0].toLowerCase()}${normalized.substring(2)}';
+    }
+    return normalized;
   }
 
   Future<(Uint8List, Size)> _buildWarpedBytes(ui.Image uiImage, CropPoints points) async {
